@@ -1,2 +1,2 @@
-# srfs
+# SRFS
 Statistical radiomic features reduction
