@@ -1,7 +1,9 @@
 import pandas as pd
+from pandas.core.computation.common import result_type_many
 from scipy.stats import mannwhitneyu, ks_2samp, levene
 from typeguard import typechecked
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.preprocessing import LabelEncoder
 import utils
 
@@ -14,6 +16,30 @@ def extract_feature_classes(feature_names):
     return list(feature_classes)
 
 
+def statistic_calc(df: pd.DataFrame, labels: pd.Series, column: str, show_plot: bool):
+    sample_with_zero = df[labels == 0][column]
+    sample_with_one = df[labels == 1][column]
+
+    u_p_value = mannwhitneyu(sample_with_zero, sample_with_one, alternative='two-sided').pvalue
+    ks_p_value = ks_2samp(sample_with_zero, sample_with_one).pvalue
+    levene_p_value = levene(sample_with_zero, sample_with_one)[1]
+
+    IQR_sample_with_zero = sample_with_zero.quantile(0.75) - sample_with_zero.quantile(0.25)
+    IQR_sample_with_one = sample_with_one.quantile(0.25) - sample_with_one.quantile(0.25)
+    scope_sample_with_zero = ((sample_with_zero.quantile(0.25) - 1.7 * IQR_sample_with_zero) <=
+                              sample_with_zero.mean() <=
+                              (sample_with_zero.quantile(0.75) + 1.7 * IQR_sample_with_zero))
+    scope_sample_with_one = ((sample_with_one.quantile(0.25) - 1.7 * IQR_sample_with_one) <=
+                             sample_with_one.mean() <=
+                             (sample_with_one.quantile(0.75) + 1.7 * IQR_sample_with_one))
+
+    if ks_p_value < 0.01 and (levene_p_value < 0.05 and u_p_value < 0.05) and (
+            scope_sample_with_zero and scope_sample_with_one):
+        if show_plot:
+            utils.showing_plot(sample_with_zero, sample_with_one, column)
+        return column
+
+
 @typechecked
 def srfs(df: pd.DataFrame,
          labels: pd.Series,
@@ -21,12 +47,12 @@ def srfs(df: pd.DataFrame,
          model_name: str = 'selected') -> pd.DataFrame:
     unique_values = set(labels)
 
-    if unique_values == 2:
+    if len(unique_values) == 2:
         if unique_values != {0, 1}:
             le = LabelEncoder()
             labels = pd.Series(le.fit_transform(labels))
     else:
-        raise "Labels does not contain only 2 unique values"
+        raise ValueError("Labels does not contain only 2 unique values")
 
     df = statistic_reduction(df, labels)
     df = full_remove_high_intraclass_correlations(df)
@@ -52,37 +78,11 @@ def full_remove_high_intraclass_correlations(data: pd.DataFrame, threshold_icc=0
 
 
 def statistic_reduction(df: pd.DataFrame, labels: pd.Series, show_plot=False) -> pd.DataFrame:
-    selected_features = []
-    for column in df.columns:
-        sample_with_zero = df[labels == 0][column]
-        sample_with_one = df[labels == 1][column]
-
-        u_p_value = mannwhitneyu(sample_with_zero, sample_with_one, alternative='two-sided').pvalue
-        ks_p_value = ks_2samp(sample_with_zero, sample_with_one).pvalue
-        levene_p_value = levene(sample_with_zero, sample_with_one)[1]
-
-        IQR_sample_with_zero = sample_with_zero.quantile(0.75) - sample_with_zero.quantile(0.25)
-        IQR_sample_with_one = sample_with_one.quantile(0.25) - sample_with_one.quantile(0.25)
-        scope_sample_with_zero = ((sample_with_zero.quantile(0.25) - 1.7 * IQR_sample_with_zero) <=
-                                  sample_with_zero.mean() <=
-                                  (sample_with_zero.quantile(0.75) + 1.7 * IQR_sample_with_zero))
-        scope_sample_with_one = ((sample_with_one.quantile(0.25) - 1.7 * IQR_sample_with_one) <=
-                                 sample_with_one.mean() <=
-                                 (sample_with_one.quantile(0.75) + 1.7 * IQR_sample_with_one))
-
-        if ks_p_value < 0.01 and (levene_p_value < 0.05 and u_p_value < 0.05) and (
-                scope_sample_with_zero and scope_sample_with_one):
-
-            selected_features.append(column)
-
-            if show_plot:
-                utils.showing_plot(sample_with_zero, sample_with_one, column)
-
+    results = Parallel(n_jobs=-1)(delayed(statistic_calc)(df, labels, column, show_plot) for column in df.columns)
+    selected_features = [result for result in results if result is not None]
     return df[selected_features]
 
 
 # def print_corr_matrix(data):
 #     fig = px.imshow(data.corr(method='spearman').abs(), text_auto=True, width=1000, height=800)
 #     fig.show()
-
-
